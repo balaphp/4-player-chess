@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.log
+data/*.db
+data/*.db-*
+.env
+env/.env*
+!env/.env.sample
+.DS_Store
+four-player-chess/

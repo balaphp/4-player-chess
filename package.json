@@ -1,0 +1,19 @@
+{
+  "name": "four-chess",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "bun run --cwd packages/engine test",
+    "dev": "bun run --cwd apps/server dev",
+    "build": "bun run --cwd apps/player-web build",
+    "serve": "PUBLIC_DIR=apps/player-web/dist bun --env-file=env/.env.dev apps/server/src/server.ts",
+    "start": "bun run build && bun run serve"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.3"
+  }
+}

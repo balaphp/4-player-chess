@@ -1,0 +1,11 @@
+node_modules
+**/node_modules
+.git
+data
+four-player-chess
+*.log
+apps/player-web/dist
+.claude
+.DS_Store
+env/.env*
+!env/.env.sample

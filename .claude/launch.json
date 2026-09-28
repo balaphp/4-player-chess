@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "app",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["run", "serve"],
+      "port": 4000
+    },
+    {
+      "name": "dev",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["run", "dev"],
+      "port": 4000,
+      "cwd": "/Users/balaganeshk/Development/test/4-player-chess"
+    }
+  ]
+}
