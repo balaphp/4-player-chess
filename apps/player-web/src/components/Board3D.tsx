@@ -6,6 +6,8 @@ import type { Color, GameJSON, Move, PieceType, Pos, Trap } from '@four-chess/en
 import { DUEL_OFFSET, FILES, FourChess, inBoardForMode, SIZE } from '@four-chess/engine';
 import { COLOR_HEX } from '../config';
 
+const NO_MOVES: Move[] = [];
+
 const TILE_LIGHT = 0xf0f0ed;
 const TILE_DARK = 0x27272a;
 const TILE_SELECTED = 0x5eead4;
@@ -226,6 +228,7 @@ export function Board3D({
   onMove,
   locked = false,
   myTraps = [],
+  extraMoves = NO_MOVES,
   onSquarePick,
 }: {
   state: GameJSON;
@@ -233,6 +236,7 @@ export function Board3D({
   onMove: (move: Move) => void;
   locked?: boolean;
   myTraps?: Trap[];
+  extraMoves?: Move[]; // legal moves this board cannot work out: a wall the viewer cannot see allows them
   onSquarePick?: (pos: Pos) => void;
 }) {
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -245,8 +249,12 @@ export function Board3D({
 
   const legalTargets = useMemo(() => {
     if (!selected || !myColor) return [];
-    return engine.legalMovesFrom(myColor, selected);
-  }, [engine, selected, myColor]);
+    const from = selected;
+    return [
+      ...engine.legalMovesFrom(myColor, from),
+      ...extraMoves.filter((m) => m.from.x === from.x && m.from.y === from.y),
+    ];
+  }, [engine, selected, myColor, extraMoves]);
 
   // Refs so the (once-attached) click handler always sees current values.
   const liveRef = useRef({ state, myColor, myTurn, selected, legalTargets, onMove, onSquarePick });
@@ -476,7 +484,7 @@ export function Board3D({
       ctx.pieces.add(grp);
     }
 
-    // Shields (public) as a ring on the tile in the owner's colour, empty or not.
+    // Shields, which everyone sees, as a ring on the tile in the owner's colour, empty or not.
     for (const s of state.shields ?? []) {
       if (s.until <= state.ply) continue;
       const ring = new THREE.Mesh(
@@ -490,7 +498,7 @@ export function Board3D({
       ctx.pieces.add(ring);
     }
 
-    // Walls and (only your own) secret traps.
+    // The walls and secret traps the viewer may see: their own side's, and walls they have run into.
     for (const w of state.walls ?? []) {
       const box = new THREE.Mesh(
         new THREE.BoxGeometry(0.85, 0.7, 0.85),

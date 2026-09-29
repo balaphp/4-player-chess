@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
-import type { Trap } from '@four-chess/engine';
 import { changePassword, clearSession, getStoredUser, getToken, User } from './api';
 import { GAME_URL } from './config';
-import { GameView, LobbyView } from './types';
+import { GameView, LobbyView, PrivateView } from './types';
 import { Auth } from './components/Auth';
 import { Lobbies } from './components/Lobbies';
 import { Room } from './components/Room';
@@ -63,7 +62,9 @@ export default function App() {
   const [lobbies, setLobbies] = useState<LobbyView[]>([]);
   const [lobby, setLobby] = useState<LobbyView | null>(null);
   const [game, setGame] = useState<GameView | null>(null);
-  const [myTraps, setMyTraps] = useState<Trap[]>([]);
+  const [mine, setMine] = useState<PrivateView | null>(null);
+  const gameOnScreen = useRef<string | null>(null);
+  gameOnScreen.current = game?.id ?? null;
   const [toast, setToast] = useState<string | null>(null);
   const [showPw, setShowPw] = useState(false);
   const socketRef = useRef<Socket | null>(null);
@@ -91,9 +92,9 @@ export default function App() {
     });
     socket.on(
       'session:restore',
-      ({ lobby, game, myTraps }: { lobby: LobbyView; game: GameView | null; myTraps?: Trap[] }) => {
+      ({ lobby, game, mine }: { lobby: LobbyView; game: GameView | null; mine?: PrivateView | null }) => {
         setLobby(lobby);
-        setMyTraps(myTraps ?? []);
+        setMine(mine ?? null);
         if (game) {
           setGame(game);
           setView('game');
@@ -106,7 +107,7 @@ export default function App() {
       socket.emit('game:join', { gameId }, (res: any) => {
         if (res?.ok) {
           setGame(res.game);
-          setMyTraps(res.myTraps ?? []);
+          setMine(res.mine ?? null);
           setView('game');
         }
       });
@@ -114,11 +115,10 @@ export default function App() {
     socket.on('game:state', (g: GameView) => {
       setGame((prev) => (prev && prev.id !== g.id ? prev : g));
     });
-    socket.on('game:private', ({ gameId, traps }: { gameId: string; traps: Trap[] }) => {
-      setGame((prev) => {
-        if (prev && prev.id === gameId) setMyTraps(traps);
-        return prev;
-      });
+    // It arrives only when it changes, so one for another game (this player's
+    // other tab) must not replace the one in use.
+    socket.on('game:private', (view: PrivateView) => {
+      if (gameOnScreen.current === null || gameOnScreen.current === view.gameId) setMine(view);
     });
     return () => {
       socket.close();
@@ -199,7 +199,7 @@ export default function App() {
               const res = await emit('game:join', { gameId });
               if (res?.ok) {
                 setGame(res.game);
-                setMyTraps(res.myTraps ?? []);
+                setMine(res.mine ?? null);
                 setView('game');
               }
             }}
@@ -235,7 +235,7 @@ export default function App() {
           <Game
             game={game}
             me={user}
-            myTraps={myTraps}
+            mine={mine}
             socket={socketRef.current}
             emit={emit}
             onExit={async () => {

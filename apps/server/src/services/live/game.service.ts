@@ -1,5 +1,13 @@
 import crypto from 'node:crypto';
-import { chooseAIMove, type Color, FourChess, type Move, type PowerAction, seatColors } from '@four-chess/engine';
+import {
+  chooseAIMove,
+  type Color,
+  FourChess,
+  type Move,
+  posNameFor,
+  type PowerAction,
+  seatColors,
+} from '@four-chess/engine';
 import type { Collection, Db } from 'mongodb';
 import { GameError } from '../../lib/errors.js';
 import { logger, type Logger } from '../../lib/logger.js';
@@ -157,7 +165,7 @@ export class GameService {
         { returnDocument: 'after' },
       );
       if (res) {
-        this.broadcast.game(res);
+        this.broadcast.game(res, doc);
         if (newState.winners) await this.finish(res, engine, 'finished');
         else this.scheduleAI(gameId, newState.ply);
         return res;
@@ -216,11 +224,22 @@ export class GameService {
     return color;
   }
 
+  // A move can run into a wall the player cannot see. It is refused like any
+  // illegal move, but the wall is theirs to see from then on, and that
+  // discovery is saved before they are told.
   async move(userId: string, gameId: string, mv: Move): Promise<void> {
+    const ranInto: { square: string | null } = { square: null };
     await this.apply(gameId, (engine, doc) => {
-      const res = engine.applyMove(this.actingColor(doc, userId, 'move'), mv);
-      if (!res.ok) throw new GameError(res.error);
+      ranInto.square = null; // a retry starts over
+      const color = this.actingColor(doc, userId, 'move');
+      const res = engine.applyMove(color, mv);
+      if (res.ok) return;
+      const wall = engine.revealWall(color, mv);
+      if (!wall) throw new GameError(res.error);
+      ranInto.square = posNameFor(engine.mode, wall);
+      this.log.debug({ gameId, userId, color, square: ranInto.square }, 'move ran into a hidden wall');
     });
+    if (ranInto.square) throw new GameError(`A hidden wall stands on ${ranInto.square}: pick another move`);
   }
 
   async usePower(userId: string, gameId: string, action: PowerAction): Promise<void> {

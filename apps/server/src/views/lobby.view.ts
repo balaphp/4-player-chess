@@ -1,4 +1,14 @@
-import { seatColors, type Trap } from '@four-chess/engine';
+import {
+  type Color,
+  FourChess,
+  type Move,
+  type PowerId,
+  seatColors,
+  type Shield,
+  type Trap,
+  viewOf,
+  type Wall,
+} from '@four-chess/engine';
 import { type LiveGameDoc, type LobbyDoc, seatColorOf } from '../models/lobby.model.js';
 
 export const lobbyView = (l: LobbyDoc) => ({
@@ -16,7 +26,9 @@ export const lobbyView = (l: LobbyDoc) => ({
   filledCount: seatColors(l.mode).filter((c) => l.seats[c]).length,
 });
 
-// the game as everyone may see it
+// The game as everyone may see it. Powers are secret, so the shared payload
+// carries no wall, no trap and no record of a power being used: only shields,
+// without their end.
 export const liveGameView = (g: LiveGameDoc) => ({
   id: g._id,
   lobbyId: g.lobbyId,
@@ -24,15 +36,38 @@ export const liveGameView = (g: LiveGameDoc) => ({
   mode: g.mode,
   seats: g.seats,
   startedAt: g.startedAt.getTime(),
-  // secret traps never ride the shared payload
-  state: { ...g.state, traps: [] },
+  state: viewOf(g.state, null),
 });
 
-// a player's own secret traps, sent to that player only
-export function privateTrapsFor(g: LiveGameDoc, userId: string): Trap[] {
+// what one player may see on top of that, sent to that player only
+export interface PrivateGameView {
+  gameId: string;
+  ply: number; // the position this belongs to
+  powers: PowerId[]; // their own, still unused
+  walls: Wall[];
+  shields: Shield[];
+  traps: Trap[];
+  // legal moves their own board cannot work out: see FourChess.unseenLegalMoves
+  extraMoves: Move[];
+}
+
+export function privateGameView(g: LiveGameDoc, color: Color): PrivateGameView {
+  const seen = viewOf(g.state, color);
+  return {
+    gameId: g._id,
+    ply: g.state.ply,
+    powers: seen.powers?.[color] ?? [],
+    walls: seen.walls ?? [],
+    shields: seen.shields ?? [],
+    traps: seen.traps ?? [],
+    extraMoves: g.state.powersEnabled ? FourChess.fromJSON(g.state).unseenLegalMoves(color) : [],
+  };
+}
+
+// null for anyone who is not playing
+export function privateGameViewFor(g: LiveGameDoc, userId: string): PrivateGameView | null {
   const color = seatColorOf(g.seats, userId);
-  if (!color) return [];
-  return (g.state.traps ?? []).filter((t) => t.color === color);
+  return color ? privateGameView(g, color) : null;
 }
 
 // one row in the "games in progress" list

@@ -1,4 +1,4 @@
-import type { Color, GameJSON, Mode } from '@four-chess/engine';
+import type { Color, GameJSON, Mode, Move, PowerId, Shield, Trap, Wall } from '@four-chess/engine';
 
 export type SeatInfo =
   | { kind: 'human'; userId: string; username: string; connected: boolean; autopilot?: boolean }
@@ -29,6 +29,8 @@ export interface ChatMessage {
   at: number;
 }
 
+// what everyone in the game is sent: powers are secret, so its state holds
+// no wall, no trap and nobody's unused powers
 export interface GameView {
   id: string;
   lobbyId: string;
@@ -37,4 +39,15 @@ export interface GameView {
   seats: Record<Color, SeatInfo>;
   startedAt: number;
   state: GameJSON;
+}
+
+// what only this player is sent on top of that
+export interface PrivateView {
+  gameId: string;
+  ply: number; // the position this belongs to
+  powers: PowerId[]; // their own, still unused
+  walls: Wall[];
+  shields: Shield[];
+  traps: Trap[];
+  extraMoves: Move[]; // legal moves a wall they cannot see makes possible
 }

@@ -6,7 +6,7 @@ import { config } from '../config/index.js';
 import { logger } from '../lib/logger.js';
 import { authenticate, type AuthUser } from '../services/auth.service.js';
 import type { LiveServices } from '../services/live/index.js';
-import { liveGameView, lobbyView, privateTrapsFor } from '../views/lobby.view.js';
+import { liveGameView, lobbyView, privateGameViewFor } from '../views/lobby.view.js';
 import { registerChatHandlers } from './chat.handlers.js';
 import { createRegister, type SocketContext } from './context.js';
 import { registerGameHandlers } from './game.handlers.js';
@@ -111,7 +111,7 @@ export function registerSocketHandlers(io: Server, { lobbies, games }: LiveServi
         socket.emit('session:restore', {
           lobby: lobbyView(existing),
           game: game ? liveGameView(game) : null,
-          myTraps: game ? privateTrapsFor(game, user.id) : [],
+          mine: game ? privateGameViewFor(game, user.id) : null,
         });
         ctx.log.debug({ lobbyId: existing._id, gameId: existing.gameId }, 'session restored');
       }

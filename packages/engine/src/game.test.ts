@@ -518,10 +518,9 @@ test('powers: teleport places a trap; enemy stepping on it teleports to a random
   g.board[6][5] = g.board[5][5];
   g.board[5][5] = null;
   // Manually trigger the trap as the engine would.
-  const noteBefore = '';
   // The knight is now at the trap square.
-  const note = (g as any).triggerTrapAt(trapSq);
-  assert.ok(note.includes('🌀'), 'teleport note emitted: ' + note);
+  const sprung = (g as any).triggerTrapAt(trapSq);
+  assert.deepEqual(sprung, ['teleport'], 'the teleport trap went off');
   // Knight must no longer be at the trap square.
   assert.equal(g.board[6][5], null, 'knight left trap square');
   // Knight must be exactly once on the board.
@@ -576,25 +575,32 @@ test('powers: set on your own turn before moving; turn and ply unchanged, rev bu
   assert.equal(g.toJSON().lastMove, null, 'powers are not reported as the last move');
 });
 
-test('powers: one visible power per square; unknowing trap collisions coexist and only hit enemies', () => {
+test('powers: one power per square, as far as the player can tell', () => {
+  const g = customGame({
+    mode: 'teams',
+    powersEnabled: true,
+    powers: { red: ['faint', 'wall'], blue: [], yellow: [], green: [] },
+    pieces: [p(7, 0, 'K', 'red'), p(0, 7, 'K', 'blue'), p(7, 13, 'K', 'yellow'), p(13, 7, 'K', 'green')],
+    traps: [{ type: 'mine', color: 'yellow', x: 6, y: 6, expires: 60 }], // the partner's: red sees it
+    shields: [{ x: 1, y: 7, until: 60, color: 'blue' }], // an enemy's: everyone sees shields
+    turn: 'red',
+  });
+  assert.equal(g.applyPower('red', { power: 'wall', target: { x: 6, y: 6 } }).ok, false, "no wall on the partner's trap");
+  assert.equal(g.applyPower('red', { power: 'faint', target: { x: 1, y: 7 } }).ok, false, 'no trap on a shielded square');
+  assert.ok(g.powers.red.includes('faint') && g.powers.red.includes('wall'), 'rejected powers are not consumed');
+  assert.ok(g.applyPower('red', { power: 'wall', target: { x: 7, y: 7 } }).ok, 'a free square is fine');
+});
+
+test('powers: traps unknowingly set on one square both stay armed and only hit enemies', () => {
   const g = customGame({
     mode: 'duel',
     powersEnabled: true,
-    powers: { red: ['faint', 'mine', 'shield', 'wall'], blue: [], yellow: ['mine', 'teleport'], green: [] },
+    powers: { red: [], blue: [], yellow: ['mine'], green: [] },
     alive: ['red', 'yellow'],
     pieces: [p(7, 3, 'K', 'red'), p(6, 3, 'R', 'red', { hasMoved: true }), p(7, 10, 'K', 'yellow')],
-    turn: 'red',
+    traps: [{ type: 'mine', color: 'red', x: 6, y: 6, expires: 60 }],
+    turn: 'yellow',
   });
-  assert.ok(g.applyPower('red', { power: 'shield', target: { x: 5, y: 4 } }).ok);
-  assert.equal(g.applyPower('red', { power: 'faint', target: { x: 5, y: 4 } }).ok, false, 'no trap under own shield');
-  assert.equal(g.applyPower('red', { power: 'wall', target: { x: 5, y: 4 } }).ok, false, 'no wall on a shielded square');
-  assert.ok(g.applyPower('red', { power: 'mine', target: { x: 6, y: 6 } }).ok);
-  assert.equal(g.applyPower('red', { power: 'wall', target: { x: 6, y: 6 } }).ok, false, 'no wall on own trap');
-  assert.equal(g.applyPower('red', { power: 'faint', target: { x: 6, y: 6 } }).ok, false, 'no second trap on own trap');
-  assert.ok(g.powers.red.includes('faint') && g.powers.red.includes('wall'), 'rejected powers are not consumed');
-
-  assert.ok(g.applyMove('red', { from: { x: 7, y: 3 }, to: { x: 8, y: 3 } }).ok);
-  assert.equal(g.applyPower('yellow', { power: 'teleport', target: { x: 5, y: 4 } }).ok, false, 'visible shield blocks anyone');
   assert.ok(g.applyPower('yellow', { power: 'mine', target: { x: 6, y: 6 } }).ok, "placing on red's secret mine succeeds");
   assert.equal(g.traps.filter((t) => t.x === 6 && t.y === 6).length, 2, 'both secret traps stay armed');
   assert.ok(g.applyMove('yellow', { from: { x: 7, y: 10 }, to: { x: 7, y: 9 } }).ok);
@@ -605,6 +611,50 @@ test('powers: one visible power per square; unknowing trap collisions coexist an
   const left = g.traps.filter((t) => t.x === 6 && t.y === 6);
   assert.equal(left.length, 1, "red's own mine is still armed");
   assert.equal(left[0].color, 'red');
+});
+
+test('powers: one in play at a time; the next can be set once it has ended or gone off', () => {
+  const g = customGame({
+    mode: 'duel',
+    powersEnabled: true,
+    powers: { red: ['wall', 'mine'], blue: [], yellow: ['faint', 'wall'], green: [] },
+    alive: ['red', 'yellow'],
+    pieces: [p(7, 3, 'K', 'red'), p(4, 3, 'R', 'red', { hasMoved: true }), p(7, 10, 'K', 'yellow')],
+    turn: 'red',
+    ply: 0,
+  });
+  const refused = (res: ReturnType<FourChess['applyPower']>) => (res.ok ? '' : res.error);
+  // the kings step back and forth to pass the time
+  const pass = () => {
+    const y = g.turn === 'red' ? 3 : 10;
+    const from = g.pieceAt({ x: 7, y })?.type === 'K' ? 7 : 8;
+    assert.ok(g.applyMove(g.turn, { from: { x: from, y }, to: { x: from === 7 ? 8 : 7, y } }).ok);
+  };
+
+  assert.ok(g.applyPower('red', { power: 'wall', target: { x: 9, y: 6 } }).ok);
+  assert.match(refused(g.applyPower('red', { power: 'mine', target: { x: 8, y: 6 } })), /one power at a time.*Fortress/i);
+  assert.ok(g.powers.red.includes('mine'), 'the refused power is not used up');
+  assert.equal(g.traps.length, 0);
+  pass();
+
+  // one player's power does not hold back another's
+  assert.ok(g.applyPower('yellow', { power: 'faint', target: { x: 4, y: 6 } }).ok);
+  assert.match(refused(g.applyPower('yellow', { power: 'wall', target: { x: 5, y: 8 } })), /one power at a time.*Fainted/i);
+  pass();
+
+  // red's rook steps on the trap: it has gone off, so yellow may set the next
+  const res = g.applyMove('red', { from: { x: 4, y: 3 }, to: { x: 4, y: 6 } });
+  assert.deepEqual(res.ok && res.applied.sprung, ['faint']);
+  assert.ok(g.applyPower('yellow', { power: 'wall', target: { x: 5, y: 8 } }).ok, 'free again once the trap went off');
+  pass();
+
+  // red's wall stands for six yellow moves: until then red sets nothing
+  while (g.ply < 12) {
+    if (g.turn === 'red') assert.equal(g.applyPower('red', { power: 'mine', target: { x: 8, y: 6 } }).ok, false, `ply ${g.ply}`);
+    pass();
+  }
+  assert.equal(g.turn, 'red');
+  assert.ok(g.applyPower('red', { power: 'mine', target: { x: 8, y: 6 } }).ok, 'free again once the wall has ended');
 });
 
 test('powers: stacked enemy traps fire in placement order; own traps never fire on the owner', () => {
@@ -699,4 +749,193 @@ test('powers: a wall records who placed it, and the real countdown runs from 6 t
   }
   assert.deepEqual(seen, [6, 6, 5, 5, 4, 4, 3, 3, 2, 2, 1, 1]);
   assert.equal(g.toJSON().walls!.length, 0, 'the wall is gone after the sixth opponent move');
+});
+
+test('secret powers: a player is sent their own; enemies and spectators get no trap or record of use', () => {
+  const g = customGame({
+    mode: 'duel',
+    powersEnabled: true,
+    powers: { red: ['mine', 'faint'], blue: [], yellow: ['wall'], green: [] },
+    alive: ['red', 'yellow'],
+    pieces: [p(7, 3, 'K', 'red'), p(7, 10, 'K', 'yellow')],
+    shields: [{ x: 7, y: 10, until: 22, color: 'yellow' }],
+    turn: 'red',
+    ply: 10,
+  });
+  assert.ok(g.applyPower('red', { power: 'mine', target: { x: 6, y: 6 } }).ok);
+
+  const own = g.toClientJSON('red');
+  assert.equal(own.traps!.length, 1);
+  assert.equal(own.traps![0].expires, 22, 'the owner knows when the trap fades');
+  assert.deepEqual(own.powers!.red, ['faint']);
+  assert.deepEqual(own.powers!.yellow, [], "not the enemy's");
+  assert.equal(own.shields![0].until, 11, "nor how long the enemy's shield lasts");
+
+  const enemy = g.toClientJSON('yellow');
+  assert.equal(enemy.shields![0].until, 22, 'the shield is theirs: they know its end');
+  assert.deepEqual(enemy.powers!.yellow, ['wall']);
+
+  for (const viewer of ['yellow', null] as (Color | null)[]) {
+    const seen = g.toClientJSON(viewer);
+    const who = viewer ?? 'a spectator';
+    assert.deepEqual(seen.traps, [], `${who} gets no enemy trap`);
+    assert.equal(seen.shields!.length, 1, 'shields show to everyone');
+    assert.deepEqual(seen.powers!.red, [], `${who} is not told which powers red has left`);
+    assert.equal(seen.history.length, 0, 'using a power leaves no record');
+    assert.equal('rev' in seen, false, 'the counter that moves with each power is left out');
+  }
+  assert.equal(g.toClientJSON(null).shields![0].until, 11, 'a spectator is not told how long a shield lasts');
+  // the shield still does its work on the enemy's own board
+  assert.equal(FourChess.fromJSON(g.toClientJSON('red')).isShieldedAt(7, 10, 'yellow'), true);
+});
+
+test('secret powers: in a team game partners share theirs', () => {
+  const g = customGame({
+    mode: 'teams',
+    powersEnabled: true,
+    powers: { red: ['wall', 'mine'], blue: [], yellow: [], green: [] },
+    pieces: [p(7, 0, 'K', 'red'), p(0, 7, 'K', 'blue'), p(7, 13, 'K', 'yellow'), p(13, 7, 'K', 'green')],
+    traps: [{ type: 'faint', color: 'yellow', x: 6, y: 6, expires: 60 }],
+    turn: 'red',
+  });
+  assert.ok(g.applyPower('red', { power: 'wall', target: { x: 7, y: 7 } }).ok);
+  const partner = g.toClientJSON('yellow');
+  assert.equal(partner.walls!.length, 1, "yellow sees red's wall");
+  assert.equal(partner.walls![0].until, g.walls[0].until, 'with its countdown');
+  assert.deepEqual(partner.powers!.red, ['mine']);
+  assert.equal(g.toClientJSON('red').traps!.length, 1, "red sees yellow's trap");
+  for (const enemy of ['blue', 'green'] as Color[]) {
+    assert.deepEqual(g.toClientJSON(enemy).walls, []);
+    assert.deepEqual(g.toClientJSON(enemy).traps, []);
+  }
+});
+
+test('secret powers: a move that runs into a hidden wall is refused and reveals it to that player only', () => {
+  const g = customGame({
+    mode: 'duel',
+    powersEnabled: true,
+    powers: { red: [], blue: [], yellow: ['wall'], green: [] },
+    alive: ['red', 'yellow'],
+    pieces: [p(7, 3, 'K', 'red'), p(4, 3, 'R', 'red', { hasMoved: true }), p(7, 10, 'K', 'yellow')],
+    turn: 'yellow',
+  });
+  assert.ok(g.applyPower('yellow', { power: 'wall', target: { x: 4, y: 6 } }).ok);
+  assert.ok(g.applyMove('yellow', { from: { x: 7, y: 10 }, to: { x: 8, y: 10 } }).ok);
+
+  // red's rook heads up the file, past a wall red cannot see
+  const move = { from: { x: 4, y: 3 }, to: { x: 4, y: 8 } };
+  assert.deepEqual(g.toClientJSON('red').walls, []);
+  assert.equal(g.applyMove('red', move).ok, false, 'the wall is there all the same');
+  assert.equal(g.revealWall('red', { from: { x: 4, y: 3 }, to: { x: 9, y: 9 } }), null, 'a plainly illegal move reveals nothing');
+  const before = g.rev;
+  const wall = g.revealWall('red', move);
+  assert.deepEqual(wall && { x: wall.x, y: wall.y }, { x: 4, y: 6 });
+  assert.equal(g.rev, before + 1, 'rev bumps so the discovery is saved');
+  assert.equal(g.turn, 'red', 'red still has the move');
+
+  const known = g.toClientJSON('red').walls!;
+  assert.equal(known.length, 1, 'red now sees it');
+  assert.equal(known[0].until, g.ply + 1, 'but not how long it lasts');
+  assert.equal('knownTo' in known[0], false, 'who has found a wall is nobody else’s business');
+  assert.deepEqual(g.toClientJSON(null).walls, [], 'spectators still do not');
+  assert.equal(FourChess.fromJSON(g.toJSON()).toClientJSON('red').walls!.length, 1, 'the discovery survives a save');
+  assert.equal(g.revealWall('red', move), null, 'a wall already known is not discovered twice');
+});
+
+test('secret powers: the nearest of several hidden walls is the one a move runs into', () => {
+  const g = customGame({
+    mode: 'duel',
+    alive: ['red', 'yellow'],
+    pieces: [p(7, 3, 'K', 'red'), p(4, 3, 'R', 'red', { hasMoved: true }), p(7, 10, 'K', 'yellow')],
+    walls: [
+      { x: 4, y: 7, until: 40, color: 'yellow' },
+      { x: 4, y: 5, until: 40, color: 'yellow' },
+    ],
+    turn: 'red',
+  });
+  const wall = g.revealWall('red', { from: { x: 4, y: 3 }, to: { x: 4, y: 8 } });
+  assert.deepEqual(wall && { x: wall.x, y: wall.y }, { x: 4, y: 5 });
+  assert.equal(g.toClientJSON('red').walls!.length, 1, 'the wall behind it stays hidden');
+});
+
+test('secret powers: moves only a hidden wall makes legal are reported to the player', () => {
+  // yellow's wall stands between yellow's own rook and the red king: red is
+  // not in check, but red's board, which lacks the wall, believes it is
+  const g = customGame({
+    mode: 'duel',
+    alive: ['red', 'yellow'],
+    pieces: [
+      p(7, 3, 'K', 'red'),
+      p(3, 4, 'P', 'red', { hasMoved: true }),
+      p(7, 9, 'R', 'yellow', { hasMoved: true }),
+      p(10, 10, 'K', 'yellow'),
+    ],
+    walls: [{ x: 7, y: 6, until: 40, color: 'yellow' }],
+    turn: 'red',
+  });
+  assert.equal(g.inCheck('red'), false);
+  const redBoard = FourChess.fromJSON(g.toClientJSON('red'));
+  assert.equal(redBoard.inCheck('red'), true, "red's own board sees a check");
+  const has = (moves: { from: { x: number; y: number }; to: { x: number; y: number } }[], fx: number, fy: number, tx: number, ty: number) =>
+    moves.some((m) => m.from.x === fx && m.from.y === fy && m.to.x === tx && m.to.y === ty);
+  assert.equal(has(redBoard.legalMoves('red'), 3, 4, 3, 5), false, 'and would not offer the pawn push');
+  const extra = g.unseenLegalMoves('red');
+  assert.equal(has(extra, 3, 4, 3, 5), true, 'so the push is reported');
+  assert.equal(has(extra, 7, 3, 7, 4), true, 'and the king step up the walled file');
+  assert.equal(has(extra, 7, 3, 6, 3), false, 'moves red can already see are not repeated');
+  assert.deepEqual(g.unseenLegalMoves('yellow'), [], 'only for the player to move');
+  assert.ok(g.applyMove('red', { from: { x: 3, y: 4 }, to: { x: 3, y: 5 } }).ok);
+});
+
+test('secret powers: placing on a hidden enemy wall or trap succeeds, so the refusal gives nothing away', () => {
+  const game = () =>
+    customGame({
+      mode: 'duel',
+      powersEnabled: true,
+      powers: { red: ['mine', 'wall', 'faint'], blue: [], yellow: [], green: [] },
+      alive: ['red', 'yellow'],
+      pieces: [p(7, 3, 'K', 'red'), p(7, 10, 'K', 'yellow')],
+      walls: [
+        { x: 5, y: 6, until: 40, color: 'yellow' },
+        { x: 8, y: 6, until: 40, color: 'yellow', knownTo: ['red'] },
+      ],
+      traps: [{ type: 'mine', color: 'yellow', x: 6, y: 6 }],
+      turn: 'red',
+    });
+  assert.ok(game().applyPower('red', { power: 'mine', target: { x: 5, y: 6 } }).ok, 'on a hidden enemy wall');
+  assert.ok(game().applyPower('red', { power: 'wall', target: { x: 6, y: 6 } }).ok, 'on a hidden enemy trap');
+  assert.equal(game().applyPower('red', { power: 'faint', target: { x: 8, y: 6 } }).ok, false, 'not on a wall red has found');
+});
+
+test('secret powers: a sprung trap is recorded on the move that set it off', () => {
+  const g = customGame({
+    mode: 'duel',
+    alive: ['red', 'yellow'],
+    pieces: [p(7, 3, 'K', 'red'), p(4, 3, 'R', 'red', { hasMoved: true }), p(7, 10, 'K', 'yellow')],
+    traps: [{ type: 'mine', color: 'yellow', x: 4, y: 6 }],
+    turn: 'red',
+  });
+  const res = g.applyMove('red', { from: { x: 4, y: 3 }, to: { x: 4, y: 6 } });
+  assert.ok(res.ok);
+  assert.deepEqual(res.ok && res.applied.sprung, ['mine']);
+  const seen = g.toClientJSON(null).history;
+  assert.deepEqual(seen[seen.length - 1].sprung, ['mine'], 'everyone is told once it has gone off');
+  assert.deepEqual(seen[seen.length - 1].to, { x: 4, y: 6 });
+});
+
+test('castling: a wall between king and rook stops it', () => {
+  const g = customGame({
+    pieces: [
+      p(7, 0, 'K', 'red'),
+      p(10, 0, 'R', 'red'),
+      p(3, 0, 'R', 'red'),
+      p(0, 7, 'K', 'blue'),
+      p(7, 13, 'K', 'yellow'),
+      p(13, 7, 'K', 'green'),
+    ],
+    walls: [{ x: 9, y: 0, until: 40, color: 'blue' }],
+  });
+  const castles = g.legalMoves('red').filter((m) => m.castle);
+  assert.equal(castles.length, 1);
+  assert.deepEqual(castles[0].to, { x: 5, y: 0 }, 'only the side without the wall');
 });

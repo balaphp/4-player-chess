@@ -1,6 +1,15 @@
 import { type PointerEvent as ReactPointerEvent, useMemo, useRef, useState } from 'react';
 import type { Color, GameJSON, Move, Pos, Trap } from '@four-chess/engine';
-import { DUEL_OFFSET, FILES, FourChess, inBoardForMode, opponentMovesLeft, SIZE } from '@four-chess/engine';
+import {
+  DUEL_OFFSET,
+  FILES,
+  FourChess,
+  inBoardForMode,
+  opponentMovesLeft,
+  POWER_INFO,
+  sharesPowers,
+  SIZE,
+} from '@four-chess/engine';
 import { COLOR_HEX } from '../config';
 import { PieceIcon } from './PieceIcons';
 
@@ -8,6 +17,7 @@ const S = 40; // square size in svg units
 const PIECE_SCALE = (S * 0.92) / 45;
 // how far (in screen pixels) a press must travel before it becomes a drag
 const DRAG_THRESHOLD = 5;
+const NO_MOVES: Move[] = [];
 
 // rotate board coords so the viewer's side ends up at the bottom of the screen
 function toScreen(view: Color, p: Pos): { sx: number; sy: number } {
@@ -81,6 +91,7 @@ export function Board({
   onMove,
   locked = false,
   myTraps = [],
+  extraMoves = NO_MOVES,
   onSquarePick,
 }: {
   state: GameJSON;
@@ -88,6 +99,7 @@ export function Board({
   onMove: (move: Move) => void;
   locked?: boolean; // autopilot is playing this seat -> view-only
   myTraps?: Trap[]; // the viewer's own secret traps
+  extraMoves?: Move[]; // legal moves this board cannot work out: a wall the viewer cannot see allows them
   onSquarePick?: (pos: Pos) => void; // power targeting: clicks report the square
 }) {
   const view: Color = myColor ?? 'red';
@@ -101,8 +113,8 @@ export function Board({
 
   const legalTargets = useMemo(() => {
     if (!selected || !myColor) return [];
-    return engine.legalMovesFrom(myColor, selected);
-  }, [engine, selected, myColor]);
+    return [...engine.legalMovesFrom(myColor, selected), ...extraMoves.filter((m) => same(m.from, selected))];
+  }, [engine, selected, myColor, extraMoves]);
 
   const pieceMap = useMemo(() => {
     const m = new Map<string, GameJSON['pieces'][number]>();
@@ -220,6 +232,10 @@ export function Board({
   const shieldMap = new Map(active(state.shields).map((s) => [keyOf(s), s] as const));
   const trapMap = new Map(myTraps.map((t) => [keyOf(t), t] as const));
 
+  // only a power's own side is told how long it lasts
+  const movesLeft = (until: number, owner?: Color) =>
+    sharesPowers(state.mode, myColor, owner) ? opponentMovesLeft(state, until, owner) : null;
+
   // the opponent moves left before a power disappears, in the square's corner
   const countdown = (key: string, sx: number, sy: number, left: number) => (
     <g key={key} pointerEvents="none">
@@ -260,11 +276,12 @@ export function Board({
         />,
       );
 
-      // Powers: walls, shields, own secret traps, each with its countdown.
+      // Powers: shields, and the walls and traps the viewer may see. Their own
+      // (and their partner's) carry a countdown.
       let left: number | null = null;
       const wall = wallMap.get(key);
       if (wall) {
-        left = opponentMovesLeft(state, wall.until, wall.color);
+        left = movesLeft(wall.until, wall.color);
         badges.push(
           <text key={`w${x}-${y}`} x={sx * S + S / 2} y={sy * S + S / 2 + 1} textAnchor="middle" dominantBaseline="central" fontSize={S * 0.62} pointerEvents="none">
             🧱
@@ -274,7 +291,7 @@ export function Board({
       const p = pieceMap.get(key);
       const shield = shieldMap.get(key);
       if (shield) {
-        left = opponentMovesLeft(state, shield.until, shield.color);
+        left = movesLeft(shield.until, shield.color);
         badges.push(
           <rect key={`sh${x}-${y}`} x={sx * S + 2} y={sy * S + 2} width={S - 4} height={S - 4} rx={4} fill="none" stroke={COLOR_HEX[shield.color]} strokeWidth={2} opacity={0.9} pointerEvents="none" />,
         );
@@ -288,7 +305,7 @@ export function Board({
       }
       const trap = trapMap.get(key);
       if (trap) {
-        if (trap.expires !== undefined) left = opponentMovesLeft(state, trap.expires, trap.color);
+        if (trap.expires !== undefined) left = movesLeft(trap.expires, trap.color);
         badges.push(
           <text key={`tr${x}-${y}`} x={sx * S + S / 2} y={sy * S + S / 2 + 1} textAnchor="middle" dominantBaseline="central" fontSize={S * 0.5} opacity={0.6} pointerEvents="none">
             {trap.type === 'faint' ? '😴' : trap.type === 'teleport' ? '🌀' : '💣'}
@@ -455,6 +472,30 @@ export function Board({
       arrowMoves.unshift(realMoves[i]);
     }
   }
+  // A trap that has gone off is no secret any more: its icon marks the square
+  // for as long as the move that set it off keeps its arrow. A piece put to
+  // sleep already wears the icon.
+  for (const m of arrowMoves) {
+    const occupant = pieceMap.get(keyOf(m.to));
+    const asleep = !!occupant && (occupant.frozenUntil ?? 0) > state.ply;
+    const icons = (m.sprung ?? []).filter((type) => !(type === 'faint' && asleep)).map((type) => POWER_INFO[type].icon);
+    if (icons.length === 0) continue;
+    const { sx, sy } = toScreen(view, m.to);
+    badges.push(
+      <text
+        key={`sprung${m.to.x}-${m.to.y}`}
+        x={occupant ? sx * S + 3 : sx * S + S / 2}
+        y={occupant ? sy * S + S - 8 : sy * S + S / 2 + 1}
+        textAnchor={occupant ? 'start' : 'middle'}
+        dominantBaseline="central"
+        fontSize={occupant ? S * 0.3 : S * 0.5}
+        pointerEvents="none"
+      >
+        {icons.join('')}
+      </text>,
+    );
+  }
+
   // each arrow takes its mover's colour; the light halo keeps it readable on
   // any square and over pieces of the same colour
   const moveArrows = arrowMoves.map((m, i) => {

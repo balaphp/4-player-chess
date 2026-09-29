@@ -2,6 +2,7 @@ import { duelBoard, inBoardForMode, initialBoard } from './board.js';
 import {
   ALL_POWERS,
   AppliedMove,
+  canSeePower,
   Cell,
   Color,
   COLORS,
@@ -21,9 +22,12 @@ import {
   PowerAction,
   PowerId,
   POWER_INFO,
+  powerInPlay,
+  Shield,
   SIZE,
   TEAM_OF,
   Trap,
+  viewOf,
   Wall,
 } from './types.js';
 
@@ -91,7 +95,7 @@ export class FourChess {
   powers: Record<Color, PowerId[]>;
   traps: Trap[] = [];
   walls: Wall[] = [];
-  shields: { x: number; y: number; until: number; color: Color }[] = [];
+  shields: Shield[] = [];
 
   constructor(mode: Mode = 'ffa', powersEnabled = false) {
     this.mode = mode;
@@ -336,7 +340,8 @@ export class FourChess {
       let rook: { piece: Piece; pos: Pos } | null = null;
       for (let i = 1; ; i++) {
         const sq = { x: from.x + d.x * i, y: from.y + d.y * i };
-        if (!this.inBounds(sq.x, sq.y)) break;
+        // a wall between king and rook stops the castle
+        if (!this.inBounds(sq.x, sq.y) || this.wallAt(sq.x, sq.y)) break;
         const p = this.board[sq.y][sq.x];
         if (!p) continue;
         if (p.type === 'R' && p.color === king.color && !p.hasMoved && !p.dead) {
@@ -512,17 +517,18 @@ export class FourChess {
   // A piece just landed on pos — fire the traps there. Traps only ever affect
   // their owner's enemies; several may share a square, and they go off in
   // placement order until one removes the piece (the rest stay armed).
-  private triggerTrapAt(pos: Pos): string {
-    if (!this.inBounds(pos.x, pos.y)) return '';
-    let note = '';
+  // Returns the traps that went off: from then on they are no secret.
+  private triggerTrapAt(pos: Pos): Trap['type'][] {
+    const sprung: Trap['type'][] = [];
+    if (!this.inBounds(pos.x, pos.y)) return sprung;
     for (const trap of this.traps.filter((t) => t.x === pos.x && t.y === pos.y)) {
       const piece = this.board[pos.y][pos.x];
       if (!piece || piece.dead) break;
       if (!this.isEnemy(piece.color, trap.color)) continue;
       this.traps.splice(this.traps.indexOf(trap), 1);
+      sprung.push(trap.type);
       if (trap.type === 'faint') {
         piece.frozenUntil = this.ply + this.alive.length + 1;
-        note += ' 😴';
         continue;
       }
       if (trap.type === 'teleport') {
@@ -540,7 +546,6 @@ export class FourChess {
           this.board[dest.y][dest.x] = piece;
           this.board[pos.y][pos.x] = null;
         }
-        note += ' 🌀';
         continue;
       }
       const wasLivingKing = piece.type === 'K' && this.isAlive(piece.color);
@@ -549,9 +554,8 @@ export class FourChess {
         this.eliminate(piece.color, 'king-captured', trap.color);
         this.checkWinners();
       }
-      note += ' 💣';
     }
-    return note;
+    return sprung;
   }
 
   // Advance to the next living player, eliminating anyone found without a
@@ -627,19 +631,80 @@ export class FourChess {
       this.eliminate(target!.color, 'king-captured', color);
       this.checkWinners();
     }
-    const trapNote = this.triggerTrapAt(legal.to);
-    if (trapNote) applied.notation += trapNote;
+    const sprung = this.triggerTrapAt(legal.to);
+    if (sprung.length > 0) {
+      applied.sprung = sprung;
+      applied.notation += sprung.map((type) => ` ${POWER_INFO[type].icon}`).join('');
+    }
     this.advanceTurn();
     return { ok: true, applied };
   }
 
-  // powers are single-use and consume the turn
+  // ---------- secret powers ----------
+
+  canSee(viewer: Color | null, power: { color?: Color; knownTo?: Color[] }): boolean {
+    return canSeePower(this.mode, viewer, power);
+  }
+
+  private hiddenWallsFor(color: Color): Wall[] {
+    return this.walls.filter((w) => w.until > this.ply && !this.canSee(color, w));
+  }
+
+  // the board as `color` knows it: without the walls they cannot see
+  private asSeenBy(color: Color): FourChess {
+    const seen = this.clone();
+    seen.walls = seen.walls.filter((w) => seen.canSee(color, w));
+    return seen;
+  }
+
+  // A move that looked legal to `color` was refused. If a wall they could
+  // not see was in the way, that wall is known to them from now on: returns
+  // it, or null when the move was simply illegal.
+  revealWall(color: Color, move: Move): Wall | null {
+    if (this.winners || color !== this.turn) return null;
+    const hidden = this.hiddenWallsFor(color);
+    if (hidden.length === 0) return null;
+    const isTheMove = (m: Move) =>
+      m.from.x === move.from.x && m.from.y === move.from.y && m.to.x === move.to.x && m.to.y === move.to.y;
+    const seen = this.asSeenBy(color);
+    if (!seen.legalMoves(color).some(isTheMove)) return null;
+    // the walls that stop the move, nearest to the piece first: that is the one it runs into
+    const distance = (w: Wall) => Math.max(Math.abs(w.x - move.from.x), Math.abs(w.y - move.from.y));
+    const inTheWay = hidden
+      .filter((w) => {
+        seen.walls.push(w);
+        const stopped = !seen.legalMoves(color).some(isTheMove);
+        seen.walls.pop();
+        return stopped;
+      })
+      .sort((a, b) => distance(a) - distance(b));
+    const wall = inTheWay[0];
+    if (!wall) return null;
+    wall.knownTo = [...(wall.knownTo ?? []), color];
+    this.rev++;
+    return wall;
+  }
+
+  // Legal moves that do not look legal to `color`, because a wall they cannot
+  // see stands between an attacker and their king. Their own board cannot
+  // work these out, so they have to be told.
+  unseenLegalMoves(color: Color): Move[] {
+    if (this.winners || color !== this.turn) return [];
+    if (this.hiddenWallsFor(color).length === 0) return [];
+    const key = (m: Move) => `${m.from.x},${m.from.y},${m.to.x},${m.to.y}`;
+    const seen = new Set(this.asSeenBy(color).legalMoves(color).map(key));
+    return this.legalMoves(color).filter((m) => !seen.has(key(m)));
+  }
+
+  // powers are single-use, set on your own turn before the move, one at a time
   applyPower(color: Color, action: PowerAction): { ok: true; applied: AppliedMove } | { ok: false; error: string } {
     const err = (error: string) => ({ ok: false as const, error });
     if (this.winners) return err('Game is over');
     if (!this.powersEnabled) return err('Powers are not enabled in this game');
     if (color !== this.turn) return err(`It is ${this.turn}'s turn`);
     if (!this.powers[color].includes(action.power)) return err('You have already used that power');
+    const inPlay = powerInPlay(this, color);
+    if (inPlay) return err(`One power at a time: your ${POWER_INFO[inPlay].name} is still in play`);
     const initial = color[0].toUpperCase();
     const icon = POWER_INFO[action.power].icon;
     const HIDDEN: Pos = { x: -1, y: -1 };
@@ -648,18 +713,19 @@ export class FourChess {
     let to = HIDDEN;
     let captured: AppliedMove['captured'] = null;
 
-    // one square holds one power: a wall, a shield or a trap
+    // One square holds one power, as far as the player can tell: a shield
+    // (everyone sees those), or a wall or trap they know of. Enemy walls and
+    // traps are secret and never checked here, or the refusal would give
+    // them away: powers may unknowingly share a square.
     const hasPower = (t: Pos) =>
-      this.wallAt(t.x, t.y) ||
       this.shields.some((s) => s.x === t.x && s.y === t.y && s.until > this.ply) ||
-      this.traps.some((tr) => tr.x === t.x && tr.y === t.y && tr.color === color);
+      this.walls.some((w) => w.x === t.x && w.y === t.y && w.until > this.ply && this.canSee(color, w)) ||
+      this.traps.some((tr) => tr.x === t.x && tr.y === t.y && this.canSee(color, tr));
     const placeError = (t: Pos): string | null => {
       if (!this.inBounds(t.x, t.y) || this.board[t.y][t.x]) return 'Pick an empty square';
       if (hasPower(t)) return 'That square already has a power';
       return null;
     };
-    // other players' traps are secret and never checked here: two players may
-    // unknowingly trap the same square, and both traps then wait for enemies
 
     switch (action.power) {
       case 'faint':
@@ -756,11 +822,9 @@ export class FourChess {
     };
   }
 
-  // clients only ever see their own traps
+  // what a client may be sent: see viewOf
   toClientJSON(viewer: Color | null): GameJSON {
-    const json = this.toJSON();
-    json.traps = viewer ? this.traps.filter((t) => t.color === viewer).map((t) => ({ ...t })) : [];
-    return json;
+    return viewOf(this.toJSON(), viewer);
   }
 
   static fromJSON(json: GameJSON): FourChess {

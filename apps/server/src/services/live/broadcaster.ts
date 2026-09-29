@@ -2,7 +2,7 @@ import { seatColors } from '@four-chess/engine';
 import type { Collection } from 'mongodb';
 import type { Server } from 'socket.io';
 import type { LiveGameDoc, LobbyDoc } from '../../models/lobby.model.js';
-import { liveGameView, lobbyView } from '../../views/lobby.view.js';
+import { liveGameView, lobbyView, privateGameView } from '../../views/lobby.view.js';
 
 // Everything the server pushes to players. Emits fan out to every server
 // instance through the Socket.IO mongo adapter.
@@ -26,16 +26,22 @@ export class Broadcaster {
     this.io.to(`lobby:${l._id}`).emit('lobby:state', lobbyView(l));
   }
 
-  // the shared state to the whole game, and each player's secret traps to that player only
-  game(g: LiveGameDoc): void {
-    this.io.to(`game:${g._id}`).emit('game:state', liveGameView(g));
+  // The shared state to the whole game, and to each player what only they may
+  // see. Given the game as it was `before`, only those whose view changed hear
+  // of it: a message by itself would tell the others a power was just used.
+  game(g: LiveGameDoc, before?: LiveGameDoc): void {
+    const changed = <T>(view: (doc: LiveGameDoc) => T): T | null => {
+      const now = view(g);
+      return before && JSON.stringify(view(before)) === JSON.stringify(now) ? null : now;
+    };
+    const shared = changed(liveGameView);
+    if (shared) this.io.to(`game:${g._id}`).emit('game:state', shared);
     if (!g.state.powersEnabled) return;
     for (const c of seatColors(g.mode)) {
       const seat = g.seats[c];
       if (seat?.kind !== 'human') continue;
-      this.io
-        .to(`user:${seat.userId}`)
-        .emit('game:private', { gameId: g._id, traps: (g.state.traps ?? []).filter((t) => t.color === c) });
+      const mine = changed((doc) => privateGameView(doc, c));
+      if (mine) this.io.to(`user:${seat.userId}`).emit('game:private', mine);
     }
   }
 

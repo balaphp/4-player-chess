@@ -1,19 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Color, Move, Pos, PowerAction, PowerId, Trap } from '@four-chess/engine';
-import { ALL_POWERS, MODE_LABEL, opponentMovesLeft, POWER_INFO, seatColors, TEAM_OF } from '@four-chess/engine';
+import type { Color, GameJSON, Move, Pos, PowerAction, PowerId } from '@four-chess/engine';
+import {
+  ALL_POWERS,
+  MODE_LABEL,
+  opponentMovesLeft,
+  POWER_INFO,
+  powerInPlay,
+  seatColors,
+  TEAM_OF,
+} from '@four-chess/engine';
 import type { Socket } from 'socket.io-client';
 import { User } from '../api';
 import { COLOR_HEX } from '../config';
-import { GameView } from '../types';
+import { GameView, PrivateView } from '../types';
 import { Board } from './Board';
 import { Board3D } from './Board3D';
 import { CallPanel } from './CallPanel';
 import { ChatPanel } from './ChatPanel';
 
+const NO_MOVES: Move[] = [];
+
 export function Game({
   game,
   me,
-  myTraps,
+  mine,
   socket,
   emit,
   onExit,
@@ -21,13 +31,12 @@ export function Game({
 }: {
   game: GameView;
   me: User;
-  myTraps: Trap[];
+  mine: PrivateView | null; // what only this player may see of the game
   socket: Socket | null;
   emit: (event: string, payload?: Record<string, unknown>) => Promise<any>;
   onExit: () => void;
   onBackToRoom: () => void;
 }) {
-  const state = game.state;
   const myColor = useMemo(
     () =>
       seatColors(game.mode).find((c) => {
@@ -36,6 +45,25 @@ export function Game({
       }) ?? null,
     [game.seats, game.mode, me.id],
   );
+
+  // The shared state holds no secret power. What this player may see of them
+  // comes separately and is laid over it: their own walls and traps, the
+  // walls their moves have run into, their unused powers.
+  const secrets = mine && mine.gameId === game.id ? mine : null;
+  const state = useMemo<GameJSON>(() => {
+    if (!secrets || !myColor) return game.state;
+    const unused = game.state.powers ?? { red: [], blue: [], yellow: [], green: [] };
+    return {
+      ...game.state,
+      walls: secrets.walls,
+      shields: secrets.shields,
+      traps: secrets.traps,
+      powers: { ...unused, [myColor]: secrets.powers },
+    };
+  }, [game.state, secrets, myColor]);
+  const myTraps = secrets?.traps ?? [];
+  // only for the position they were worked out for
+  const extraMoves = secrets && secrets.ply === state.ply ? secrets.extraMoves : NO_MOVES;
 
   const mySeat = myColor ? game.seats[myColor] : null;
   const autopilot = mySeat?.kind === 'human' && !!mySeat.autopilot;
@@ -101,6 +129,10 @@ export function Game({
     return Math.max(0, ...ends.map((until) => opponentMovesLeft(state, until, myColor)));
   };
 
+  // one power at a time: nothing new can be set while one is in play
+  const inPlay = myColor ? powerInPlay(state, myColor) : null;
+  const waitFor = inPlay ? `your ${POWER_INFO[inPlay].name} is still in play` : null;
+
   const shownPower = targeting?.power ?? hoveredPower;
   const targetingHint = targeting
     ? targeting.power === 'shield'
@@ -156,6 +188,7 @@ export function Game({
             onMove={onMove}
             locked={autopilot}
             myTraps={myTraps}
+            extraMoves={extraMoves}
             onSquarePick={targeting ? onSquarePick : undefined}
           />
         ) : (
@@ -165,6 +198,7 @@ export function Game({
             onMove={onMove}
             locked={autopilot}
             myTraps={myTraps}
+            extraMoves={extraMoves}
             onSquarePick={targeting ? onSquarePick : undefined}
           />
         )}
@@ -282,7 +316,8 @@ export function Game({
                   >
                     <button
                       className={`power-btn ${targeting?.power === pw ? 'targeting' : ''} ${used ? 'used' : ''}`}
-                      disabled={used || autopilot || !myTurnNow}
+                      disabled={used || autopilot || !myTurnNow || inPlay !== null}
+                      title={!used && waitFor ? `One power at a time: ${waitFor}` : undefined}
                       onClick={() => setTargeting(targeting?.power === pw ? null : { power: pw })}
                     >
                       {info.icon}
@@ -309,6 +344,7 @@ export function Game({
                   ) : (
                     <strong> Already used.</strong>
                   ))}
+                {myPowers.includes(shownPower) && waitFor && <strong> Not yet: {waitFor}.</strong>}
               </div>
             )}
             {targeting && (
@@ -322,7 +358,11 @@ export function Game({
               </div>
             )}
             {!targeting && !shownPower && (
-              <div className="muted small">⚡ One use each — set it before your move; it doesn't cost the move.</div>
+              <div className="muted small">
+                {waitFor
+                  ? `⚡ One power at a time: ${waitFor}.`
+                  : "⚡ One use each, one at a time — set it before your move; it doesn't cost the move."}
+              </div>
             )}
           </div>
         )}

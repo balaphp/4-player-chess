@@ -108,13 +108,29 @@ number of proxies in front of the server so `ip` is the real client address
   uncapturable). 🛡 **Shield** — protect a square in your home rows: your
   piece standing on it cannot be captured. 💣 **Land Mine** — secretly mine a
   square: the next enemy piece landing there is destroyed (no points; a mined
-  king counts as an elimination for the mine's owner). 🧱 **Fortress** — make
-  an empty square impassable. 🌀 **Teleport** — secretly trap a square: the
-  next enemy piece landing there is moved to a random empty square.
-  Effects last for 6 opponent moves, and the board and the power's tile count
-  down the moves left. A square holds one visible power at a time. Traps never
-  affect their owner and are secret: the server only ever sends your own traps
-  to your client. Using a power is not listed in the move list.
+  king counts as an elimination for the mine's owner). 🧱 **Fortress** —
+  secretly make an empty square impassable. 🌀 **Teleport** — secretly trap a
+  square: the next enemy piece landing there is moved to a random empty square.
+  Effects last for 6 opponent moves, and your own board and the power's tile
+  count down the moves left. Traps never affect their owner. **One power at a
+  time**: while a wall or shield of yours stands, or a trap of yours is armed,
+  you cannot set another; the next is free once that one has ended or gone
+  off.
+- **Powers are secret.** You see your own powers and, in a tag team, your
+  partner's. Of your opponents' you see only:
+  - their **shield**, without the count of moves it has left;
+  - a **trap** once it has gone off: its icon marks the square and the move;
+  - a **wall** once one of your moves has run into it. That move is refused
+    ("A hidden wall stands on b5"), you pick another, and the wall stays on
+    your board, without its count.
+
+  Spectators see shields and sprung traps only. Using a power is never
+  listed in the move list. This is enforced by the server, not the page:
+  the state everyone is sent holds no wall, no trap and nobody's unused
+  powers, each player is sent their own separately, and nothing at all is
+  sent to the others when a power is set. Because enemy walls and traps are
+  unknown to you, you may set a power on a square that already holds one of
+  theirs; both then stand.
 - **Autopilot (watch mode)**: a human can let the AI play their own seat —
   tick "AI plays my moves" when creating a group, or toggle it on your seat in
   the room / with the in-game Autopilot button. While it's on the board is
@@ -201,6 +217,7 @@ End-to-end smoke scripts (servers must be running):
 ```bash
 bun scripts/e2e-game.mjs   # signup -> group -> 3 AI -> play vs AI
 bun scripts/e2e-win.mjs    # 4 humans -> three resign -> winner recorded
+bun scripts/e2e-powers.mjs # powers stay secret: what opponents and spectators are sent
 ```
 
 Environment variables: `JWT_SECRET`; MongoDB via `MONGOHOST` + `MONGOPORT` +

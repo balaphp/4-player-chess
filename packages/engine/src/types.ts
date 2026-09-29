@@ -50,9 +50,9 @@ export const EFFECT_OPPONENT_MOVES = 6;
 
 export const POWER_INFO: Record<PowerId, { icon: string; name: string; hint: string }> = {
   faint: { icon: '😴', name: 'Fainted', hint: 'Secretly trap a square: the next ENEMY piece landing there falls asleep (immobile and uncapturable for 1 turn). Untriggered traps fade after 6 opponent moves.' },
-  shield: { icon: '🛡', name: 'Shield', hint: 'Protect a square in your home rows: any of your pieces on that square cannot be captured for 6 opponent moves.' },
+  shield: { icon: '🛡', name: 'Shield', hint: 'Protect a square in your home rows: any of your pieces on that square cannot be captured for 6 opponent moves. Opponents see the shield, but not how long it lasts.' },
   mine: { icon: '💣', name: 'Land Mine', hint: 'Secretly mine a square: the next ENEMY piece landing there is destroyed (no points for anyone). Fades after 6 opponent moves.' },
-  wall: { icon: '🧱', name: 'Fortress', hint: 'Make an empty square impassable for 6 opponent moves.' },
+  wall: { icon: '🧱', name: 'Fortress', hint: 'Secretly make an empty square impassable for 6 opponent moves. An opponent only finds it when a move runs into it.' },
   teleport: { icon: '🌀', name: 'Teleport', hint: 'Place a hidden trap on an empty square. The next ENEMY piece that steps on it is teleported to a random empty square anywhere on the board.' },
 };
 
@@ -69,6 +69,14 @@ export interface Wall {
   y: number;
   until: number;
   color?: Color; // who placed it; absent on walls from before this was recorded
+  knownTo?: Color[]; // enemies whose move has run into it
+}
+
+export interface Shield {
+  x: number;
+  y: number;
+  until: number;
+  color: Color;
 }
 
 // How many more moves the owner's opponents will make before an effect that
@@ -107,6 +115,7 @@ export interface AppliedMove extends Move {
   captured: { type: PieceType; color: Color } | null;
   notation: string;
   power?: PowerId; // set when this entry is a power use, not a move
+  sprung?: Trap['type'][]; // traps this move set off on its landing square
 }
 
 export interface Elimination {
@@ -130,9 +139,10 @@ export interface GameJSON {
   points: Record<Color, number>;
   powersEnabled?: boolean;
   powers?: Record<Color, PowerId[]>; // still unused per color
+  // the full lists exist server-side only: clients get what viewOf leaves
   walls?: Wall[];
-  shields?: { x: number; y: number; until: number; color: Color }[];
-  traps?: Trap[]; // full list server-side; clients only get their own
+  shields?: Shield[];
+  traps?: Trap[];
   turn: Color;
   alive: Color[];
   eliminated: Elimination[];
@@ -151,6 +161,71 @@ export const COLORS: Color[] = ['red', 'blue', 'yellow', 'green'];
 
 // tag-team partners sit opposite each other
 export const TEAM_OF: Record<Color, 0 | 1> = { red: 0, yellow: 0, blue: 1, green: 1 };
+
+// A player has one power in play at a time: a wall or shield still standing,
+// or a trap still armed. The next can be set once that one has ended or gone
+// off. Returns the power in play, or null.
+export function powerInPlay(
+  state: { ply: number; walls?: Wall[]; shields?: Shield[]; traps?: Trap[] },
+  color: Color,
+): PowerId | null {
+  if ((state.walls ?? []).some((w) => w.color === color && w.until > state.ply)) return 'wall';
+  if ((state.shields ?? []).some((s) => s.color === color && s.until > state.ply)) return 'shield';
+  const armed = (state.traps ?? []).find(
+    (t) => t.color === color && (t.expires ?? Number.MAX_SAFE_INTEGER) > state.ply,
+  );
+  return armed ? armed.type : null;
+}
+
+// ---------- who sees which power ----------
+
+// a player and, in a team game, their partner share what they know
+export function sharesPowers(mode: Mode, viewer: Color | null, owner: Color | undefined): boolean {
+  if (!viewer || !owner) return false;
+  return mode === 'teams' ? TEAM_OF[viewer] === TEAM_OF[owner] : viewer === owner;
+}
+
+// Traps and walls are secret: seen by their owner's side, and a wall also by
+// an enemy whose move has run into it. Spectators (viewer null) see neither.
+export function canSeePower(
+  mode: Mode,
+  viewer: Color | null,
+  power: { color?: Color; knownTo?: Color[] },
+): boolean {
+  if (!power.color) return true; // a wall from before owners were recorded
+  return sharesPowers(mode, viewer, power.color) || (viewer !== null && !!power.knownTo?.includes(viewer));
+}
+
+// The game as `viewer` may see it (null: a spectator). Enemy traps and walls
+// are left out, and so is every record of a power being used. Shields show
+// to everyone, but only their owner's side learns how long they last: for
+// the others `until` says no more than "still standing".
+export function viewOf(state: GameJSON, viewer: Color | null): GameJSON {
+  const mine = (owner?: Color) => sharesPowers(state.mode, viewer, owner);
+  const until = (p: { until: number; color?: Color }) => (mine(p.color) || !p.color ? p.until : state.ply + 1);
+  const view: GameJSON = {
+    ...state,
+    walls: (state.walls ?? [])
+      .filter((w) => w.until > state.ply && canSeePower(state.mode, viewer, w))
+      .map((w) => ({ x: w.x, y: w.y, until: until(w), ...(w.color ? { color: w.color } : {}) })),
+    shields: (state.shields ?? [])
+      .filter((s) => s.until > state.ply)
+      .map((s) => ({ x: s.x, y: s.y, until: until(s), color: s.color })),
+    traps: (state.traps ?? []).filter((t) => canSeePower(state.mode, viewer, t)).map((t) => ({ ...t })),
+    history: state.history.filter((h) => !h.power),
+  };
+  if (state.powers) {
+    const left = state.powers;
+    view.powers = {
+      red: mine('red') ? [...left.red] : [],
+      blue: mine('blue') ? [...left.blue] : [],
+      yellow: mine('yellow') ? [...left.yellow] : [],
+      green: mine('green') ? [...left.green] : [],
+    };
+  }
+  delete view.rev; // it moves when a power is used
+  return view;
+}
 
 // direction each color's pawns advance
 export const FORWARD: Record<Color, Pos> = {
